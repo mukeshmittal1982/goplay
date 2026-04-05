@@ -1,0 +1,21 @@
+# Node.js
+backend/node_modules/
+backend/.env
+backend/*.log
+
+# Flutter/Dart
+frontend/.dart_tool/
+frontend/.idea/
+frontend/.metadata
+frontend/build/
+frontend/*.iml
+frontend/pubspec.lock
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies
+
+# Operating System
+.DS_Store
+Thumbs.db
+
+# Ngrok
+ngrok.log
