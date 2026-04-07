@@ -19,3 +19,9 @@ Thumbs.db
 
 # Ngrok
 ngrok.log
+
+# Temporary Debug/Test Scripts
+backend/check_*.js
+backend/test_*.js
+backend/run_local_parse.js
+backend/temp_rankings/

@@ -1,6 +1,7 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { Pool } = require('pg');
+const pdf = require('pdf-parse');
 require('dotenv').config({ path: '../../.env' });
 
 const pool = new Pool({
@@ -89,17 +90,35 @@ async function scrapeTournamentDetails(t) {
     const response = await axios.get(t.detailsUrl);
     const $ = cheerio.load(response.data);
 
-    const wrapper = $('.wpb_wrapper');
-    const h4s = wrapper.find('h4');
+    // Precise Location extraction:
+    // AITA pages have several <h4> tags. 
+    // Usually the second and third <h4> are the city and state.
+    // We'll filter out garbage like "More News"
+    const h4s = $('.wpb_wrapper h4').map((i, el) => $(el).text().trim()).get();
     
-    if (h4s.length >= 3) {
-      t.location = `${$(h4s[1]).text().trim()}, ${$(h4s[2]).text().trim()}`;
+    // Filter out obvious garbage
+    const filteredH4s = h4s.filter(text => 
+      text.length > 0 && 
+      !text.includes('More News') && 
+      !text.includes('Shrivalli') &&
+      !text.toUpperCase().includes('AITA')
+    );
+
+    if (filteredH4s.length >= 2) {
+      t.location = `${filteredH4s[0]}, ${filteredH4s[1]}`;
+    } else if (filteredH4s.length === 1) {
+      t.location = filteredH4s[0];
     } else {
-      t.location = "N/A";
+      // Fallback: try to find anything that looks like a city in parentheses from the title
+      const match = t.title.match(/\(([^)]+)\)/);
+      t.location = match ? match[1] : "N/A";
     }
 
     const factSheetLink = $('a:contains("Fact Sheet")').attr('href');
-    if (factSheetLink) t.factSheetUrl = factSheetLink;
+    if (factSheetLink) {
+      t.factSheetUrl = factSheetLink;
+      await parseFactSheet(t);
+    }
 
     const acceptanceLists = [];
     $('a:contains("Under"), a:contains("Men"), a:contains("Women")').each((i, el) => {
@@ -120,6 +139,36 @@ async function scrapeTournamentDetails(t) {
   } catch (err) {
     console.error(`Error details for ${t.aitaId}:`, err.message);
   }
+}
+
+async function parseFactSheet(t) {
+  try {
+    const response = await axios.get(t.factSheetUrl, { responseType: 'arraybuffer' });
+    const data = await pdf(response.data);
+    const text = data.text.toUpperCase();
+
+    // Look for Withdrawal Deadline
+    const withdrawalMatch = text.match(/WITHDRAWAL DEADLINE\s*[:\-]?\s*(\d{2}[-/]\d{2}[-/]\d{4})/);
+    if (withdrawalMatch) {
+      t.withdrawalDeadline = parseDate(withdrawalMatch[1]);
+    }
+
+    // Look for Sign-in details
+    const signInMatch = text.match(/SIGN[- ]IN\s*(?:DATE|TIME)?\s*[:\-]?\s*([^\n]+)/);
+    if (signInMatch) {
+      t.signInDate = signInMatch[1].trim();
+    }
+  } catch (err) {
+    console.warn(`Could not parse Fact Sheet for ${t.aitaId}: ${err.message}`);
+  }
+}
+
+function parseDate(dateStr) {
+  const parts = dateStr.split(/[-/]/);
+  if (parts.length === 3) {
+    return new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+  }
+  return null;
 }
 
 async function scrapeAcceptanceList(aitaTournamentId, list) {
@@ -201,23 +250,26 @@ async function savePlayerAndRegistration(data) {
 async function saveTournament(t) {
   try {
     await pool.query(`
-      INSERT INTO tournaments (aita_id, title, category, start_date, location, fact_sheet_url, status, week_text)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      INSERT INTO tournaments (aita_id, title, category, start_date, location, fact_sheet_url, status, week_text, withdrawal_deadline, sign_in_date)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       ON CONFLICT (aita_id) DO UPDATE SET
         title = EXCLUDED.title,
         category = EXCLUDED.category,
         start_date = EXCLUDED.start_date,
         location = EXCLUDED.location,
         fact_sheet_url = EXCLUDED.fact_sheet_url,
-        week_text = EXCLUDED.week_text
-    `, [t.aitaId, t.title, t.category, t.startDate, t.location, t.factSheetUrl, 'ACTIVE', t.weekText]);
+        week_text = EXCLUDED.week_text,
+        withdrawal_deadline = EXCLUDED.withdrawal_deadline,
+        sign_in_date = EXCLUDED.sign_in_date
+    `, [t.aitaId, t.title, t.category, t.startDate, t.location, t.factSheetUrl, 'ACTIVE', t.weekText, t.withdrawalDeadline, t.signInDate]);
   } catch (err) {
     console.error(`Error saveTournament ${t.aitaId}:`, err.message);
   }
 }
 
-if (require.main === module) {
-  scrapeCalendar();
-}
+// Removing auto-run to allow server to persist
+// if (require.main === module) {
+//   scrapeCalendar();
+// }
 
 module.exports = { scrapeCalendar, getScrapeStatus };
